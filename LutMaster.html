@@ -366,7 +366,8 @@
         <button id="slotA" class="on">A</button><button id="slotB">B</button><button id="slotCopy" title="Copy current grade to the other slot">copy →</button>
       </span>
       <button id="removephoto">Remove photo</button>
-      <button id="savephoto">Save graded photo</button>
+      <button id="savephoto">Save photo</button>
+      <button id="saveallphotos" title="Grade and save every loaded photo">Save all photos</button>
       <button id="newimg">Add photos</button>
       <button id="chartbtn2">Test chart</button>
     </div>
@@ -1062,7 +1063,8 @@ function render(){
     scheduleCubeAnalysis();
     if(cur<0)return;
     const src=images[cur].data;
-    const N=25,plut=new Float32Array(N*N*N*3);
+    // Keep preview and exported LUT grids aligned, avoiding different interpolation.
+    const N=+$("lutsize").value||33,plut=new Float32Array(N*N*N*3);
     let i=0;
     for(let b=0;b<N;b++)for(let g=0;g<N;g++)for(let r=0;r<N;r++){
       const o=grade(r/(N-1),g/(N-1),b/(N-1));
@@ -2292,6 +2294,25 @@ function restoreLoadedLutSettings(savedList){
   loadedLuts.splice(0,loadedLuts.length,...ordered,...remaining);
   loadedLutsRender();
 }
+function restoreSavedLoadedLutData(savedData){
+  if(!Array.isArray(savedData))return;
+  const oldById=new Map(loadedLuts.map(lk=>[lk.slotId,lk]));
+  const restored=savedData.map(item=>{
+    const id=item.id||("loaded-lut-"+(loadedLutSerial++));
+    const old=oldById.get(id)||{};
+    const vals=item.data instanceof Float32Array?item.data:Float32Array.from(item.data||[]);
+    const strength=Number(item.strength);
+    Object.assign(old,{
+      slotId:id,source:old.source||null,type:"cube",name:item.name||"Loaded LUT",
+      size:+item.size,data:vals,active:item.active!==false,
+      strength:Math.max(0,Math.min(100,Number.isFinite(strength)?strength:100))
+    });
+    delete old.compiled;
+    return old;
+  });
+  loadedLuts.splice(0,loadedLuts.length,...restored);
+  loadedLutsRender();
+}
 function applyGradeData(p){
   if(p.app!=="LutMaster")throw new Error("not a LutMaster grade");
   sliders.forEach(s2=>{
@@ -2302,6 +2323,7 @@ function applyGradeData(p){
   $("hiCol").value=p.hiCol||"#e0a060";state.hiCol=hex2rgb($("hiCol").value);
   state.logMode=!!p.logMode;$("logMode").checked=state.logMode;
   state.enabled={...SECTION_DEFAULTS,...((p.state&&p.state.enabled)||{})};
+  if(Array.isArray(p.loadedLutData))restoreSavedLoadedLutData(p.loadedLutData);
   restoreLoadedLutSettings(p.loadedLuts);
   ["m","r","g","b"].forEach(ch=>curves[ch]=((p.curves&&p.curves[ch])||defCurve()).map(q=>({x:q.x,y:q.y})));
   hueShift.fill(0);(p.hueShift||[]).forEach((v,i)=>hueShift[i]=v);
@@ -2371,8 +2393,8 @@ function updateUndoButtons(){
   $("undoBtn").disabled=hpos<=0;
   $("redoBtn").disabled=hpos>=history.length-1;
 }
-function undo(){if(hpos>0){hpos--;restoreSnap(history[hpos]);updateUndoButtons();}}
-function redo(){if(hpos<history.length-1){hpos++;restoreSnap(history[hpos]);updateUndoButtons();}}
+function undo(){if(typeof batchSaving!=="undefined"&&batchSaving)return;if(hpos>0){hpos--;restoreSnap(history[hpos]);updateUndoButtons();}}
+function redo(){if(typeof batchSaving!=="undefined"&&batchSaving)return;if(hpos<history.length-1){hpos++;restoreSnap(history[hpos]);updateUndoButtons();}}
 $("undoBtn").addEventListener("click",undo);
 $("redoBtn").addEventListener("click",redo);
 document.addEventListener("keydown",e=>{
@@ -2414,16 +2436,44 @@ async function looksLoad(){
     if(raw==null){try{raw=localStorage.getItem("lutmaster.looks");}catch(e){}if(raw!=null)store.set("lutmaster.looks",raw);}
     looks=raw?(JSON.parse(raw)||[]):[];
     looks=looks.filter(lk=>!(lk.type==="cube"&&lk.volatile));
-    looks.forEach(lk=>{if(lk.type==="cube"&&lk.packed){lk.data=lk.packed.split(" ").map(Number);delete lk.packed;}});
+    looks.forEach(lk=>{
+      if(lk.type==="cube"&&lk.packed){lk.data=lk.packed.trim().split(/\s+/).map(Number);delete lk.packed;}
+      if(lk.data&&lk.data.baseLUT&&lk.data.baseLUT.packed){
+        const baseValues=lk.data.baseLUT.packed.trim().split(/\s+/).map(Number);
+        lk.data.baseLUT.data=Float32Array.from(baseValues);delete lk.data.baseLUT.packed;
+      }
+      if(lk.baked&&lk.baked.packed){
+        const values=lk.baked.packed.trim().split(/\s+/).map(Number);
+        if(lk.baked.size&&values.length>=lk.baked.size**3*3)lk.baked.data=Float32Array.from(values);
+        delete lk.baked.packed;
+      }
+      if(Array.isArray(lk.loadedLutData))lk.loadedLutData=lk.loadedLutData.map(item=>{
+        if(item.packed){item.data=Float32Array.from(item.packed.trim().split(/\s+/).map(Number));delete item.packed;}
+        else if(Array.isArray(item.data))item.data=Float32Array.from(item.data);
+        return item;
+      });
+      if(lk.baked&&(!lk.baked.data||lk.baked.data.length<lk.baked.size**3*3))delete lk.baked;
+    });
     looks=looks.filter(lk=>lk.type!=="cube"||(lk.data&&lk.data.length>=lk.size**3*3));
     looks.forEach(lk=>{lk.active=!!lk.active;lk.strength=Math.max(0,Math.min(100,Number.isFinite(+lk.strength)?+lk.strength:100));});
   }catch(e){looks=[];}
 }
+function packLutValues(values){return Array.from(values||[],v=>(+v).toFixed(6)).join(" ");}
 function looksSerialisable(stripCubes){
   return looks.map(lk=>{
-    if(lk.type!=="cube"){const{compiled,...saved}=lk;return saved;}
+    if(lk.type!=="cube"){
+      const{compiled,...saved}=lk;
+      if(saved.data&&saved.data.baseLUT&&saved.data.baseLUT.data){
+        saved.data={...saved.data,baseLUT:{size:saved.data.baseLUT.size,name:saved.data.baseLUT.name,packed:packLutValues(saved.data.baseLUT.data)}};
+      }
+      if(saved.baked&&saved.baked.data)saved.baked={size:saved.baked.size,packed:packLutValues(saved.baked.data)};
+      if(Array.isArray(saved.loadedLutData))saved.loadedLutData=saved.loadedLutData.map(item=>{
+        const{data,...meta}=item;return{...meta,packed:packLutValues(data)};
+      });
+      return saved;
+    }
     if(stripCubes)return{type:"cube",name:lk.name,size:lk.size,volatile:true};
-    return{type:"cube",name:lk.name,size:lk.size,packed:lk.data.map(v=>(+v).toFixed(4)).join(" ")};
+    return{type:"cube",name:lk.name,size:lk.size,packed:packLutValues(lk.data)};
   });
 }
 function looksPersist(){
@@ -2442,7 +2492,12 @@ function looksRender(){
     cols.forEach(col=>{const i2=document.createElement("i");i2.style.background=col;swd.appendChild(i2);});
     const nm=document.createElement("span");nm.className="lname";nm.textContent=lk.name;nm.title="Load "+lk.name;
     const ty=document.createElement("span");ty.className="ltype";ty.textContent=lk.type==="cube"?"cube "+lk.size+"\u00B3":"grade";
-    nm.addEventListener("click",()=>{loadLook(lk);$("looksDD").classList.remove("open");});
+    nm.addEventListener("click",()=>{
+      // A saved grade is a complete editor snapshot: restore its state and LUT
+      // stack. Imported .cube looks remain stackable LUT layers.
+      if(lk.type==="grade")applyLook(lk);else loadLook(lk);
+      $("looksDD").classList.remove("open");
+    });
     const del=document.createElement("button");del.type="button";del.className="ldel";del.textContent="\u00D7";del.title="Delete "+lk.name+" permanently";
     del.addEventListener("click",e=>{e.stopPropagation();const i=looks.indexOf(lk);if(i<0)return;looks.splice(i,1);looksPersist();looksRender();});
     row.append(swd,nm,ty,del);list.appendChild(row);
@@ -2569,6 +2624,13 @@ function loadLook(lk){
   pushHistory();
 }
 function computeLookSwatch(lk){
+  // The swatch for a saved grade represents the complete preview transform,
+  // including its base LUT and ordered loaded-LUT stack.
+  if(lk.baked&&lk.baked.data){
+    const d=lk.baked.data,N=lk.baked.size;
+    return SWATCH_IN.map(p=>{const o=sampleLutArr(d,N,p[0],p[1],p[2]);
+      return`rgb(${o[0]*255|0},${o[1]*255|0},${o[2]*255|0})`;});
+  }
   if(lk.type==="cube"){
     const d=Float32Array.from(lk.data);
     return SWATCH_IN.map(p=>{const o=sampleLutArr(d,lk.size,p[0],p[1],p[2]);
@@ -2584,8 +2646,13 @@ function computeLookSwatch(lk){
   return cols;
 }
 function applyLook(lk){
-  if(lk.type==="grade"){applyGradeData(lk.data);pushHistory();}
-  else{
+  if(lk.type==="grade"){
+    // Restore embedded LUT stage data as well as the UI state. This makes a
+    // saved grade self-contained even when it is reopened in a fresh session.
+    applyGradeData({...lk.data,loadedLutData:lk.loadedLutData||undefined});
+    if(cur>=0)updateNormalisationGains(images[cur].data);
+    pushHistory();
+  }else{
     applyGradeData({app:"LutMaster",state:{},curves:{},name:lk.name.replace(/\.cube$/i,"")});
     baseLUT={size:lk.size,data:Float32Array.from(lk.data),name:lk.name};
     baseOn=true;$("baseEnable").checked=true;
@@ -2622,7 +2689,26 @@ $("saveLook").addEventListener("click",async e=>{
     fail("Not saved \u2014 a LUT named \u201C"+name+"\u201D already exists.");
     return;
   }
-  looks.push({type:"grade",name,data:buildGradeData(),active:false,strength:100});
+  const previousGains=[...normalisationGains];
+  try{
+    // Capture the exact transform currently shown in the preview. The state
+    // snapshot remains editable, while the baked cube is self-contained for
+    // export and survives removal of the original loaded LUTs.
+    updateNormalisationGains(cur>=0?images[cur].data:null);
+    const data=buildGradeData();
+    const N=+$("lutsize").value;
+    const bakedData=buildCurrentGradeCubeData(N);
+    const loadedLutData=loadedLuts.map(lk=>{
+      const lut=lk.type==="cube"?{size:lk.size,data:lk.data}:compileGradeLook(lk);
+      return{id:lk.slotId,name:lk.name,active:!!lk.active,strength:+lk.strength,size:lut.size,data:Array.from(lut.data)};
+    });
+    looks.push({type:"grade",name,data,baked:{size:N,data:bakedData},loadedLutData,active:false,strength:100});
+  }catch(err){
+    fail("Couldn't save the complete look: "+(err&&err.message?err.message:"unknown error"));
+    return;
+  }finally{
+    if(cur>=0)updateNormalisationGains(images[cur].data);else normalisationGains=previousGains;
+  }
   looksPersist();looksRender();
   $("looksDD").classList.add("open");
 });
@@ -2775,75 +2861,245 @@ $("slotCopy").addEventListener("click",()=>{
   setTimeout(()=>$("slotCopy").textContent="copy \u2192",900);
 });
 
-/* ================= save graded photo ================= */
+/* ================= save photo ================= */
 function saveBlob(name,blob){
-  blob.arrayBuffer().then(buf=>tauriSave(name,new Uint8Array(buf),true)).then(handled=>{
-    if(handled)return;
-    try{const a=document.createElement("a");a.href=URL.createObjectURL(blob);a.download=name;document.body.appendChild(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(a.href),3000);}
-    catch(err){const reader=new FileReader();reader.onload=()=>{const a=document.createElement("a");a.href=reader.result;a.download=name;a.click();};reader.readAsDataURL(blob);}
-  }).catch(()=>{});
+  return blob.arrayBuffer().then(buf=>tauriSave(name,new Uint8Array(buf),true)).then(handled=>{
+    if(handled)return true;
+    try{const a=document.createElement("a");a.href=URL.createObjectURL(blob);a.download=name;document.body.appendChild(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(a.href),3000);return true;}
+    catch(err){
+      return new Promise(resolve=>{
+        const reader=new FileReader();
+        reader.onerror=()=>resolve(false);
+        reader.onload=()=>{try{const a=document.createElement("a");a.href=reader.result;a.download=name;a.click();resolve(true);}catch(_){resolve(false);}};
+        reader.readAsDataURL(blob);
+      });
+    }
+  }).catch(err=>{console.error("Could not save graded photo:",err);return false;});
 }
 function gradedFilename(imgName){
   const base=(imgName||"photo").replace(/\.[^.]+$/,"");
   const lut=($("lutname").value||"graded").replace(/[^\w-]+/g,"_");
   return base+"_"+lut+".jpg";
 }
-function exportGradedFrom(idata,imgName,btn){
-  const N=33,plut=new Float32Array(N*N*N*3);
+function buildPhotoExportLut(normalisationSource){
+  // Normalisation is image-dependent, so calculate it from the corresponding loaded preview.
+  updateNormalisationGains(normalisationSource||null);
+  const N=+$("lutsize").value||33,plut=new Float32Array(N*N*N*3);
   let i=0;
   for(let b=0;b<N;b++)for(let g=0;g<N;g++)for(let r=0;r<N;r++){
     const o=grade(r/(N-1),g/(N-1),b/(N-1));
     plut[i++]=o[0];plut[i++]=o[1];plut[i++]=o[2];
   }
-  const out=applyLut(idata,plut,N);
-  const cv=document.createElement("canvas");cv.width=idata.width;cv.height=idata.height;
-  cv.getContext("2d").putImageData(out,0,0);
-  cv.toBlob(blob=>{
-    if(blob)saveBlob(gradedFilename(imgName),blob);
-    else fail("Couldn't encode the graded photo.");
-    btn.disabled=false;btn.textContent="Save graded photo";
-  },"image/jpeg",0.93);
+  return {N,plut};
 }
-$("savephoto").addEventListener("click",()=>{
-  if(cur<0)return;
-  const im=images[cur],btn=$("savephoto");
-  btn.disabled=true;btn.textContent="Saving\u2026";
-  if(im.srcURL){
+function canvasFromImageData(idata,imgName){
+  const cv=document.createElement("canvas");
+  try{
+    cv.width=idata.width;cv.height=idata.height;
+    if(cv.width!==idata.width||cv.height!==idata.height)throw new Error("canvas dimensions were rejected");
+    const c=cv.getContext("2d",{willReadFrequently:true});
+    if(!c)throw new Error("2D canvas context is unavailable");
+    c.putImageData(idata,0,0);
+    return cv;
+  }catch(err){
+    throw new Error("Could not prepare "+(imgName||"photo")+" for export: "+(err.message||err)+". No downscaling was applied.");
+  }
+}
+function loadExportImageData(im){
+  if(!im.srcURL){
+    try{return Promise.resolve(canvasFromImageData(im.data,im.name));}
+    catch(err){return Promise.reject(err);}
+  }
+  return new Promise((resolve,reject)=>{
     const img=new Image();
-    img.onerror=()=>{exportGradedFrom(im.data,im.name,btn);};
+    img.onerror=()=>reject(new Error("Could not decode the original-resolution image "+(im.name||"photo")+". No reduced-resolution fallback was used."));
     img.onload=()=>{
-      try{
-        const cap=8192,sc=Math.min(1,cap/Math.max(img.width,img.height));
-        const w=Math.round(img.width*sc),h=Math.round(img.height*sc);
-        const cv=document.createElement("canvas");cv.width=w;cv.height=h;
-        cv.getContext("2d").drawImage(img,0,0,w,h);
-        exportGradedFrom(cv.getContext("2d").getImageData(0,0,w,h),im.name,btn);
-      }catch(err){exportGradedFrom(im.data,im.name,btn);}
+      if(!img.naturalWidth||!img.naturalHeight){
+        reject(new Error("The original image has invalid dimensions: "+(im.name||"photo")+"."));
+        return;
+      }
+      resolve(img);
     };
     img.src=im.srcURL;
-  }else{
-    exportGradedFrom(im.data,im.name,btn);
+  });
+}
+async function encodeGradedPhoto(source,imgName,normalisationSource){
+  const width=source.naturalWidth||source.videoWidth||source.width;
+  const height=source.naturalHeight||source.videoHeight||source.height;
+  if(!Number.isFinite(width)||!Number.isFinite(height)||width<1||height<1)
+    throw new Error("Invalid source dimensions for "+(imgName||"photo")+".");
+
+  // Keep full output dimensions, but process source pixels in small tiles to
+  // avoid allocating a full-resolution ImageData input and output buffer.
+  const {N,plut}=buildPhotoExportLut(normalisationSource||null);
+  const cv=document.createElement("canvas");
+  try{
+    cv.width=width;cv.height=height;
+    if(cv.width!==width||cv.height!==height)
+      throw new Error("the browser rejected the requested canvas dimensions");
+  }catch(err){
+    throw new Error("Cannot export "+(imgName||"photo")+" at its original resolution ("+width+" × "+height+"): "+(err.message||err)+". No downscaling was applied; try another browser or the desktop app.");
+  }
+  const outCtx=cv.getContext("2d");
+  if(!outCtx)throw new Error("The browser could not allocate a full-resolution output canvas for "+(imgName||"photo")+". No downscaling was applied.");
+
+  const tileW=Math.min(2048,width),tileH=Math.min(256,height);
+  const tile=document.createElement("canvas");tile.width=tileW;tile.height=tileH;
+  const tileCtx=tile.getContext("2d",{willReadFrequently:true});
+  if(!tileCtx)throw new Error("The browser could not allocate a processing tile. No downscaling was applied.");
+  let processed=0;
+  try{
+    for(let y=0;y<height;y+=tileH){
+      const h=Math.min(tileH,height-y);
+      for(let x=0;x<width;x+=tileW){
+        const w=Math.min(tileW,width-x);
+        tileCtx.clearRect(0,0,w,h);
+        tileCtx.drawImage(source,x,y,w,h,0,0,w,h);
+        const inTile=tileCtx.getImageData(0,0,w,h);
+        const outTile=applyLut(inTile,plut,N);
+        outCtx.putImageData(outTile,x,y);
+        processed++;
+        // Yield periodically so large exports do not monopolise the UI thread.
+        if(processed%8===0)await wait(0);
+      }
+    }
+  }catch(err){
+    throw new Error("Full-resolution processing failed for "+(imgName||"photo")+": "+(err.message||err)+". No downscaling was applied; the browser may have reached a canvas or memory limit.");
+  }
+
+  let blob;
+  try{
+    blob=await new Promise((resolve,reject)=>{
+      cv.toBlob(result=>result?resolve(result):reject(new Error("the browser could not encode the full-resolution canvas")),"image/jpeg",0.93);
+    });
+  }catch(err){
+    throw new Error("Full-resolution JPEG export failed for "+(imgName||"photo")+": "+(err.message||err)+". No downscaling was applied; try another browser or the desktop app.");
+  }
+  return {name:gradedFilename(imgName),blob};
+}
+async function exportGradedFrom(source,imgName,btn,normalisationSource){
+  try{
+    const {name,blob}=await encodeGradedPhoto(source,imgName,normalisationSource||null);
+    const ok=await saveBlob(name,blob);
+    if(ok===false)fail("Couldn't save the graded photo.");
+  }catch(err){
+    fail(err.message||"Couldn't encode the graded photo.");
+  }finally{
+    btn.disabled=false;btn.textContent="Save photo";
+    updateNormalisationGains(cur>=0?images[cur].data:null);
+    render();
+  }
+}
+function wait(ms){return new Promise(resolve=>setTimeout(resolve,ms));}
+$("savephoto").addEventListener("click",async()=>{
+  if(cur<0)return;
+  const im=images[cur],btn=$("savephoto");
+  btn.disabled=true;btn.textContent="Saving…";
+  try{
+    const source=await loadExportImageData(im);
+    await exportGradedFrom(source,im.name,btn,im.data);
+  }catch(err){
+    fail(err.message||"Couldn't load the original-resolution photo.");
+    btn.disabled=false;btn.textContent="Save photo";
+    updateNormalisationGains(cur>=0?images[cur].data:null);render();
+  }
+});
+
+/* ================= save all photos ================= */
+let batchSaving=false;
+$("saveallphotos").addEventListener("click",async()=>{
+  if(batchSaving||!images.length)return;
+  batchSaving=true;
+  const btn=$("saveallphotos"),singleBtn=$("savephoto");
+  btn.disabled=true;singleBtn.disabled=true;
+  const overlay=document.createElement("div");
+  overlay.style.cssText="position:fixed;inset:0;z-index:1000;display:flex;align-items:center;justify-content:center;padding:20px;background:rgba(8,10,9,.78);color:var(--text);font:12px var(--mono);text-align:center";
+  const box=document.createElement("div");
+  box.style.cssText="max-width:460px;width:100%;padding:20px;background:var(--panel);border:1px solid var(--line-hi);border-radius:5px;box-shadow:0 18px 48px rgba(0,0,0,.6)";
+  const title=document.createElement("div");
+  title.style.cssText="color:var(--orange-hi);font-size:13px;margin-bottom:10px;text-transform:uppercase";
+  title.textContent="Saving all graded photos";
+  const progress=document.createElement("div");progress.textContent="Preparing export…";
+  const filename=document.createElement("div");
+  filename.style.cssText="color:var(--dim);font-size:11px;margin-top:8px;overflow-wrap:anywhere";
+  box.append(title,progress,filename);overlay.appendChild(box);document.body.appendChild(overlay);
+  try{
+    // Desktop app builds can save all files into a single user-selected folder.
+    const T=window.__TAURI__;
+    let targetDir=null;
+    if(T&&T.dialog&&typeof T.dialog.open==="function"&&T.fs&&typeof T.fs.writeFile==="function"){
+      const chosen=await T.dialog.open({directory:true,multiple:false});
+      if(chosen==null)return;
+      targetDir=Array.isArray(chosen)?chosen[0]:chosen;
+      if(!targetDir)return;
+    }
+    const usedNames=new Set();
+    const total=images.length;
+    for(let i=0;i<total;i++){
+      const im=images[i];
+      progress.textContent=`Photo ${i+1} of ${total}`;
+      filename.textContent=im.name||"photo";
+      // Keep the current UI grade, but calculate image-dependent normalisation for this photo.
+      updateNormalisationGains(im.data);
+      const source=await loadExportImageData(im);
+      const result=await encodeGradedPhoto(source,im.name,im.data);
+      let name=result.name;
+      if(usedNames.has(name)){
+        const dot=name.lastIndexOf(".jpg"),base=dot>=0?name.slice(0,dot):name;
+        let n=2;while(usedNames.has(base+"_"+n+".jpg"))n++;
+        name=base+"_"+n+".jpg";
+      }
+      usedNames.add(name);
+      if(targetDir){
+        const bytes=new Uint8Array(await result.blob.arrayBuffer());
+        const sep=targetDir.includes("\\")?"\\":"/";
+        await T.fs.writeFile(targetDir+sep+name,bytes);
+      }else{
+        const ok=await saveBlob(name,result.blob);
+        if(ok===false)throw new Error("Failed to save "+name+".");
+        // Give browsers time to register each download before triggering the next.
+        if(i<total-1)await wait(500);
+      }
+      progress.textContent=`Saved ${i+1} of ${total}`;
+    }
+    title.textContent="Export complete";
+    progress.textContent=`Saved ${total} graded photo${total===1?"":"s"}.`;
+    filename.textContent=targetDir?targetDir:"Check your browser’s download location.";
+    await wait(900);
+  }catch(err){
+    console.error("Save all photos failed:",err);
+    fail("Save all photos failed: "+(err&&err.message?err.message:"unknown error"));
+  }finally{
+    overlay.remove();
+    btn.disabled=false;singleBtn.disabled=cur<0;
+    batchSaving=false;
+    updateNormalisationGains(cur>=0?images[cur].data:null);
+    render();
   }
 });
 
 /* ================= LUT export ================= */
-function buildCurrentGradeCubeValues(N){
-  const lines=[];
+function buildCurrentGradeCubeData(N){
+  const data=new Float32Array(N*N*N*3);
   const previousApplyingLookStack=applyingLookStack;
   try{
-    // Export the exact final transform used by the preview/photo renderer.
-    // Force the loaded-LUT stack on for export: grade() then bakes in the
-    // enabled base LUT, active loaded LUTs and their strengths, plus every
-    // enabled adjustment section and the master Look strength.
+    // Match the preview/photo pipeline exactly: base LUT, loaded LUTs in list
+    // order with their blend strengths, then the active adjustment controls.
     applyingLookStack=false;
+    let i=0;
     for(let b=0;b<N;b++)for(let g=0;g<N;g++)for(let r=0;r<N;r++){
       const o=grade(r/(N-1),g/(N-1),b/(N-1));
-      lines.push(o[0].toFixed(6)+" "+o[1].toFixed(6)+" "+o[2].toFixed(6));
+      data[i++]=clamp(o[0]);data[i++]=clamp(o[1]);data[i++]=clamp(o[2]);
     }
-    return lines;
+    return data;
   }finally{
     applyingLookStack=previousApplyingLookStack;
   }
+}
+function buildCurrentGradeCubeValues(N){
+  const data=buildCurrentGradeCubeData(N),lines=[];
+  for(let i=0;i<data.length;i+=3)lines.push(data[i].toFixed(6)+" "+data[i+1].toFixed(6)+" "+data[i+2].toFixed(6));
+  return lines;
 }
 function currentGradeCubeMetadata(){
   const rows=[];
@@ -2859,11 +3115,10 @@ function currentGradeCubeMetadata(){
 $("export").addEventListener("click",()=>{
   const N=+$("lutsize").value;
   const safeTitle=($("lutname").value||"my_grade").replace(/["\r\n]/g,"");
-  /* Lumix "base Photo Style" metadata is retained; all visual adjustments
-     are baked into the 3D samples below, not merely described in comments. */
   const psTag=$("lumixStyle").value;
   const psLine=psTag?`#LUMIXPHOTOSTYLE ${psTag}\n`:"";
   const head=`# Created with LutMaster\n${currentGradeCubeMetadata()}TITLE "${safeTitle}"\n${psLine}LUT_3D_SIZE ${N}\nDOMAIN_MIN 0.0 0.0 0.0\nDOMAIN_MAX 1.0 1.0 1.0\n`;
+  if(cur>=0)updateNormalisationGains(images[cur].data);
   const lines=buildCurrentGradeCubeValues(N);
   const name=($("lutname").value||"my_grade").replace(/[^\w-]+/g,"_")+".cube";
   download(name,head+lines.join("\n")+"\n","text/plain");
@@ -2890,39 +3145,79 @@ function updateRebate(){
   $("rebatename").textContent=($("lutname").value||"my_grade").toUpperCase().replace(/[^\w-]+/g,"_")+" \u25B8 "+$("lutsize").value;
 }
 $("lutname").addEventListener("input",updateRebate);
-$("lutsize").addEventListener("change",updateRebate);
+$("lutsize").addEventListener("change",()=>{updateRebate();render();});
 updateRebate();
 /* ================= export look pack ================= */
-function cubeTextFromGrade(name,N){
-  const head=`TITLE "${name}"\nLUT_3D_SIZE ${N}\nDOMAIN_MIN 0.0 0.0 0.0\nDOMAIN_MAX 1.0 1.0 1.0\n`;
+function cubeTextFromLutData(name,N,data,comments=""){
+  const safeName=String(name||"my_grade").replace(/["\r\n]/g,"");
+  const head=`# Created with LutMaster\n${comments}TITLE "${safeName}"\nLUT_3D_SIZE ${N}\nDOMAIN_MIN 0.0 0.0 0.0\nDOMAIN_MAX 1.0 1.0 1.0\n`;
   const lines=[];
-  for(let b=0;b<N;b++)for(let g=0;g<N;g++)for(let r=0;r<N;r++){
-    const o=grade(r/(N-1),g/(N-1),b/(N-1));
-    lines.push(o[0].toFixed(6)+" "+o[1].toFixed(6)+" "+o[2].toFixed(6));
+  for(let i=0;i<N*N*N*3;i+=3){
+    lines.push((+data[i]).toFixed(6)+" "+(+data[i+1]).toFixed(6)+" "+(+data[i+2]).toFixed(6));
   }
   return head+lines.join("\n")+"\n";
+}
+function missingSavedStackItems(gradeData,available){
+  const used=new Set(),missing=[];
+  for(const saved of (gradeData.loadedLuts||[])){
+    const strength=Number(saved.strength);
+    const amount=Number.isFinite(strength)?strength:100;
+    if(saved.active===false||amount<=0)continue;
+    let found=saved.id!=null?available.find(item=>item.slotId===saved.id&&!used.has(item)):null;
+    if(!found)found=available.find(item=>!used.has(item)&&item.type===saved.type&&item.name===saved.name);
+    if(found)used.add(found);else missing.push(saved.name||"unnamed LUT");
+  }
+  return missing;
+}
+function buildLegacySavedGradeCube(gradeData,N){
+  const liveData=buildGradeData(),liveStack=[...loadedLuts],liveGains=[...normalisationGains],liveApplying=applyingLookStack;
+  const missing=missingSavedStackItems(gradeData,liveStack);
+  if(missing.length)throw new Error("This older saved look references loaded LUTs that are not available: "+missing.join(", ")+". Reload those LUTs and save the look again to embed them.");
+  try{
+    const selected=[],used=new Set();
+    for(const saved of (gradeData.loadedLuts||[])){
+      let found=saved.id!=null?liveStack.find(item=>item.slotId===saved.id&&!used.has(item)):null;
+      if(!found)found=liveStack.find(item=>!used.has(item)&&item.type===saved.type&&item.name===saved.name);
+      if(found){selected.push(found);used.add(found);}
+    }
+    loadedLuts.splice(0,loadedLuts.length,...selected);
+    applyGradeData(gradeData);
+    updateNormalisationGains(cur>=0?images[cur].data:null);
+    return buildCurrentGradeCubeData(N);
+  }finally{
+    loadedLuts.splice(0,loadedLuts.length,...liveStack);
+    applyGradeData(liveData);
+    normalisationGains=liveGains;
+    applyingLookStack=liveApplying;
+  }
 }
 $("exportPack").addEventListener("click",()=>{
   if(!looks.length){fail("No saved LUTs to export yet — save a LUT first.");return;}
   const N=+$("lutsize").value;
-  const snap=buildGradeData(),snapBase=baseLUT;
   const files=[];
-  looks.forEach(lk=>{
-    const fname=lk.name.replace(/\.cube$/i,"").replace(/[^\w-]+/g,"_")+".cube";
-    if(lk.type==="cube"){
-      const head=`TITLE "${lk.name}"\nLUT_3D_SIZE ${lk.size}\nDOMAIN_MIN 0.0 0.0 0.0\nDOMAIN_MAX 1.0 1.0 1.0\n`;
-      const lines=[];
-      for(let i=0;i<lk.data.length;i+=3)lines.push(lk.data[i].toFixed(6)+" "+lk.data[i+1].toFixed(6)+" "+lk.data[i+2].toFixed(6));
-      files.push({name:fname,text:head+lines.join("\n")+"\n"});
-    }else{
-      baseLUT=null;applyDataSilent(lk.data);
-      files.push({name:fname,text:cubeTextFromGrade(lk.name,N)});
-    }
-  });
-  applyDataSilent(snap);state.logMode=snap.logMode;baseLUT=snapBase;
+  try{
+    looks.forEach(lk=>{
+      const fname=lk.name.replace(/\.cube$/i,"").replace(/[^\w-]+/g,"_")+".cube";
+      if(lk.type==="cube"){
+        files.push({name:fname,text:cubeTextFromLutData(lk.name,lk.size,lk.data)});
+      }else if(lk.baked&&lk.baked.data&&lk.baked.size){
+        const comments="# Saved preview composite: base LUT, active loaded LUTs (in order/strength) and enabled settings baked in.\n";
+        files.push({name:fname,text:cubeTextFromLutData(lk.name,lk.baked.size,lk.baked.data,comments)});
+      }else{
+        // Backward compatibility for saved looks created before composite
+        // LUTs were stored. Rebuild only when the original stack is available.
+        const data=buildLegacySavedGradeCube(lk.data,N);
+        const comments="# Legacy saved look: reconstructed using currently available source LUTs. Re-save it to make a self-contained snapshot.\n";
+        files.push({name:fname,text:cubeTextFromLutData(lk.name,N,data,comments)});
+      }
+    });
+  }catch(err){
+    fail("Couldn't export the complete look pack: "+(err&&err.message?err.message:"unknown error"));
+    return;
+  }
   files.forEach((f,i)=>setTimeout(()=>download(f.name,f.text,"text/plain"),i*450));
-  $("exportPack").textContent="Exporting "+files.length+" file"+(files.length>1?"s":"")+"\u2026";
-  setTimeout(()=>$("exportPack").textContent="Export look pack \u2014 every saved look as .cube",files.length*450+800);
+  $("exportPack").textContent="Exporting "+files.length+" file"+(files.length>1?"s":"")+"…";
+  setTimeout(()=>$("exportPack").textContent="Export look pack — every saved look as .cube",files.length*450+800);
 });
 
 /* ================= cube analysis (current grade) ================= */
