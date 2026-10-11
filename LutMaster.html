@@ -200,7 +200,7 @@
   aside section h2 .reset{margin-right:0}
   aside section.closed h2{margin-bottom:0}
   aside section h2::after{transform:rotate(-90deg)}
-  aside section.closed > *:not(h2){display:none}
+  aside section.closed > *:not(h2){display:none !important}
   #abwrap{display:flex;align-items:center;gap:0;border:1px solid var(--line);border-radius:3px;overflow:hidden}
   #abwrap button{background:var(--panel2);border:none;color:var(--dim);padding:5px 11px;cursor:pointer;font:11px var(--mono)}
   #abwrap button+button{border-left:1px solid var(--line)}
@@ -444,7 +444,7 @@
       <p class="tiny">Click to add a point, drag to shape, double-click a point to remove it.</p>
     </section>
 
-    <section>
+    <section class="closed">
       <h2 class="has-enable"><label class="section-enable"><input type="checkbox" data-enable="hueShift" checked aria-label="Enable Hue vs Hue"></label>Hue vs hue <button class="reset" id="hueReset">reset</button></h2>
       <canvas id="huecv" class="strip" width="300" height="100"></canvas>
       <p class="tiny">Drag a handle to rotate that hue (±60°).</p>
@@ -474,7 +474,7 @@
       <p class="tiny">Grades only the chosen colour range — everything else is untouched.</p>
     </section>
 
-    <section>
+    <section class="closed">
       <h2 class="has-enable"><label class="section-enable"><input type="checkbox" data-enable="colorBalance" checked aria-label="Enable Color Balance"></label>Color balance <button class="reset" id="cbReset">reset</button></h2>
       <div class="cbwheels">
         <div class="cbwheel-wrap"><canvas class="cbwheel" id="cbSh" width="96" height="96"></canvas><div class="cbwheel-label">Shadows</div></div>
@@ -484,18 +484,18 @@
       <p class="tiny">Drag inside a wheel to tint that region. Center = no change. Double-click a wheel to reset just that wheel.</p>
     </section>
 
-    <section>
+    <section class="closed">
       <h2 class="has-enable"><label class="section-enable"><input type="checkbox" data-enable="splitToning" checked aria-label="Enable Split Toning"></label>Split toning <button class="reset" id="splitReset">reset</button></h2>
       <div class="row"><label>Shadows</label><input type="color" id="shCol" value="#406080"><input type="range" id="shAmt" min="0" max="100" value="0"><input type="number" class="num" value="0"></div>
       <div class="row"><label>Highlights</label><input type="color" id="hiCol" value="#e0a060"><input type="range" id="hiAmt" min="0" max="100" value="0"><input type="number" class="num" value="0"></div>
     </section>
 
-    <section>
+    <section class="closed">
       <h2>Transfer ramp</h2>
       <canvas id="ramp" width="290" height="26"></canvas>
     </section>
 
-    <section>
+    <section class="closed">
       <h2>Cube analysis</h2>
       <div id="cubePanelWrap">
         <div class="panel-title">
