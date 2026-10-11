@@ -150,8 +150,13 @@
   .look .ltype{font:9px var(--mono);letter-spacing:.1em;color:var(--orange);text-transform:uppercase;flex-shrink:0}
   .look .ldel{background:none;border:none;color:var(--dim);cursor:pointer;font:13px var(--mono);padding:0 2px;flex-shrink:0}
   .look .ldel:hover{color:var(--red)}
-  #loadedLuts{display:flex;flex-direction:column;gap:4px;margin-top:8px}
-  .loaded-lut{display:flex;align-items:center;gap:8px;background:var(--panel2);border:1px solid var(--line);border-radius:3px;padding:6px 8px;position:relative}
+  #loadedLuts{display:flex;flex-direction:column;gap:6px;margin-top:8px}
+  .loaded-lut{display:flex;flex-direction:column;gap:6px;background:var(--panel2);border:1px solid var(--line);border-radius:3px;padding:7px 8px;position:relative}
+  .loaded-lut-top{display:flex;align-items:center;gap:8px;min-width:0}
+  .loaded-lut-bottom{display:flex;align-items:center;width:100%}
+  .loaded-lut.inactive .lname{color:var(--faint)}
+  .loaded-lut.inactive .lstrength-num{color:var(--faint);background:var(--panel2);border-color:var(--line);opacity:.55;cursor:not-allowed}
+  .loaded-lut.inactive .lstrength{opacity:.35;cursor:not-allowed}
   .loaded-lut.dragging{opacity:.45}
   .loaded-lut.drag-over-top{box-shadow:inset 0 2px var(--orange-hi)}
   .loaded-lut.drag-over-bottom{box-shadow:inset 0 -2px var(--orange-hi)}
@@ -160,7 +165,10 @@
   .loaded-lut .lname{flex:1;min-width:0;font:12px var(--mono);color:var(--text);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
   .loaded-lut .lactive{display:flex;align-items:center;cursor:pointer}
   .loaded-lut .lactive input,.loaded-lut .lstrength{accent-color:var(--orange);cursor:pointer}
-  .loaded-lut .lstrength{width:54px}
+  .loaded-lut .lstrength{display:block;width:100%;min-width:0;height:18px;margin:0}
+  .loaded-lut .lstrength-num{flex:0 0 54px;width:54px;min-width:54px;text-align:right;font:12px var(--mono);background:var(--panel);border:1px solid var(--line);color:var(--text);border-radius:var(--r-sm);padding:4px 6px;-moz-appearance:textfield}
+  .loaded-lut .lstrength-num::-webkit-outer-spin-button,.loaded-lut .lstrength-num::-webkit-inner-spin-button{-webkit-appearance:none;margin:0}
+  .loaded-lut .lstrength-num:focus{border-color:var(--orange);outline:none;box-shadow:0 0 0 3px var(--ring)}
   .loaded-lut .ldel{background:none;border:none;color:var(--dim);cursor:pointer;font:13px var(--mono);padding:0 2px}
   .loaded-lut .ldel:hover{color:var(--red)}
   #looksEmpty{color:var(--dim);font-size:11px;margin-top:8px}
@@ -2558,6 +2566,7 @@ function loadedLutsRender(){
   loadedLuts.forEach(lk=>{
     const row=document.createElement("div");row.className="loaded-lut";
     row.dataset.lutName=lk.name||"";
+    row.classList.toggle("inactive",!lk.active);
 
     // Drag handle keeps sliders, checkboxes and remove buttons usable without
     // accidentally starting a drag. Stack order here is processing order.
@@ -2569,10 +2578,18 @@ function loadedLutsRender(){
     const active=document.createElement("label");active.className="lactive";active.title="Enable in LUT stack";
     const check=document.createElement("input");check.type="checkbox";check.checked=lk.active;active.appendChild(check);
     const name=document.createElement("span");name.className="lname";name.textContent=lk.name;name.title=lk.name;
-    const strength=document.createElement("input");strength.className="lstrength";strength.type="range";strength.min="0";strength.max="100";strength.value=lk.strength;strength.title=lk.strength+"% strength";
+    const strengthNum=document.createElement("input");strengthNum.className="lstrength-num";strengthNum.type="number";strengthNum.min="0";strengthNum.max="100";strengthNum.step="1";strengthNum.value=lk.strength;strengthNum.setAttribute("aria-label","LUT strength (0–100)");
+    const strength=document.createElement("input");strength.className="lstrength";strength.type="range";strength.min="0";strength.max="100";strength.step="1";strength.value=lk.strength;strength.title=lk.strength+"% strength";
     const del=document.createElement("button");del.type="button";del.className="ldel";del.textContent="\u00D7";del.title="Remove loaded LUT";
-    check.addEventListener("change",()=>{lk.active=check.checked;render();pushHistory();});
-    strength.addEventListener("input",()=>{lk.strength=+strength.value;strength.title=lk.strength+"% strength";render();});
+    check.addEventListener("change",()=>{lk.active=check.checked;loadedLutsRender();render();pushHistory();});
+    const setStrength=value=>{
+      const v=Math.max(0,Math.min(100,Number.isFinite(+value)?Math.round(+value):0));
+      lk.strength=v;strength.value=v;strengthNum.value=v;strength.title=v+"% strength";strengthNum.title=v+"% strength";render();
+    };
+    strengthNum.disabled=!lk.active;strength.disabled=!lk.active;
+    strengthNum.addEventListener("input",()=>{if(strengthNum.value==="")return;setStrength(strengthNum.value);});
+    strengthNum.addEventListener("change",()=>{setStrength(strengthNum.value);pushHistory();});
+    strength.addEventListener("input",()=>setStrength(strength.value));
     strength.addEventListener("change",pushHistory);
     del.addEventListener("click",()=>{const i=loadedLuts.indexOf(lk);if(i<0)return;loadedLuts.splice(i,1);loadedLutsRender();render();pushHistory();});
 
@@ -2613,7 +2630,10 @@ function loadedLutsRender(){
       if(e.relatedTarget&&row.contains(e.relatedTarget))return;
       row.classList.remove("drag-over-top","drag-over-bottom");
     });
-    row.append(handle,active,name,strength,del);list.appendChild(row);
+    const top=document.createElement("div");top.className="loaded-lut-top";
+    const bottom=document.createElement("div");bottom.className="loaded-lut-bottom";
+    top.append(handle,active,name,strengthNum,del);bottom.appendChild(strength);
+    row.append(top,bottom);list.appendChild(row);
   });
 }
 function loadLook(lk){
