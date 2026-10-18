@@ -398,7 +398,7 @@
       <div style="display:flex;gap:8px;flex-wrap:wrap">
         <button class="btn" id="saveLook">Save</button>
         <button class="btn" id="addLookCube">Add .cube file…</button>
-        <input type="file" id="lookCubeFile" hidden>
+        <input type="file" id="lookCubeFile" accept=".cube" multiple hidden>
       </div>
       <div id="looksDD" class="close">
         <button id="looksToggle" type="button"><span id="looksCount">Saved LUTs (0)</span><span class="caret">▾</span></button>
@@ -2747,17 +2747,25 @@ function parseCubeText(text){
 }
 $("addLookCube").addEventListener("click",()=>$("lookCubeFile").click());
 $("lookCubeFile").addEventListener("change",e=>{
-  const file=e.target.files[0];if(!file)return;
-  const reader=new FileReader();
-  reader.onload=()=>{
-    try{
-      const{size,vals}=parseCubeText(reader.result);
-      looks.push({type:"cube",name:file.name,size,data:vals.map(v=>+v.toFixed(6)),active:false,strength:100});
-      looksPersist();looksRender();
-      $("looksDD").classList.add("open");
-    }catch(err){fail("Couldn't add LUT: "+err.message);}
+  const files=[...e.target.files];if(!files.length)return;
+  let pending=files.length,added=0;
+  const finish=()=>{
+    if(--pending)return;
+    if(added){looksPersist();looksRender();$("looksDD").classList.add("open");}
   };
-  reader.readAsText(file);
+  files.forEach(file=>{
+    const reader=new FileReader();
+    reader.onload=()=>{
+      try{
+        const{size,vals}=parseCubeText(reader.result);
+        looks.push({type:"cube",name:file.name,size,data:vals.map(v=>+v.toFixed(6)),active:false,strength:100});
+        added++;
+      }catch(err){fail("Couldn't add "+file.name+": "+err.message);}
+      finish();
+    };
+    reader.onerror=()=>{fail("Couldn't read "+file.name);finish();};
+    reader.readAsText(file);
+  });
   e.target.value="";
 });
 $("looksToggle").addEventListener("click",e=>{
@@ -2798,6 +2806,7 @@ $("resetAll").addEventListener("click",()=>{
   cbState.shadows={x:0,y:0};cbState.midtones={x:0,y:0};cbState.highlights={x:0,y:0};
   drawColorWheel($("cbSh"),0,0);drawColorWheel($("cbMd"),0,0);drawColorWheel($("cbHi"),0,0);
   baseLUT=null;baseOn=true;$("baseEnable").checked=true;$("baseinfo").style.display="none";
+  loadedLuts.forEach(lk=>lk.active=false);loadedLutsRender();
   if(typeof updateSecSwatch==="function")updateSecSwatch();
   rebuildCurves();render();pushHistory();
 });
