@@ -134,6 +134,9 @@
   .presets button:focus-visible,.chtabs button:focus-visible,.btn:focus-visible{outline:none;box-shadow:0 0 0 3px var(--ring);border-color:var(--orange)}
   .chtabs{margin-bottom:10px}
   .chtabs button.on{border-color:var(--orange);color:var(--orange-hi);background:var(--panel3)}
+  .curve-tools{display:flex;align-items:center;flex-wrap:wrap;gap:6px;margin:10px 0}
+  .curve-tools span{font:10px var(--mono);letter-spacing:.08em;color:var(--dim);text-transform:uppercase}
+  .curve-tools .btn.on{border-color:var(--orange);color:var(--orange-hi);background:var(--panel3)}
   #curves{width:100%;border:1px solid var(--line);border-radius:3px;background:var(--panel2);cursor:crosshair;touch-action:none}
   .tiny{color:var(--faint);font-size:11px;margin-top:8px;line-height:1.5}
   #looksDD{position:relative;margin-top:10px}
@@ -442,6 +445,12 @@
       </div>
       <canvas id="curves" width="300" height="210"></canvas>
       <p class="tiny">Click to add a point, drag to shape, double-click a point to remove it.</p>
+      <div class="curve-tools"><span>Optimize:</span>
+        <button class="btn" id="optDynamic">Dynamic</button>
+        <button class="btn" id="optContrast">Contrast</button>
+        <button class="btn" id="optFilm">Filmish</button>
+      </div>
+      <p class="tiny curve-optimization-note">Calculated based on the current image only</p>
     </section>
 
     <section class="closed">
@@ -650,6 +659,8 @@ state.shCol=hex2rgb("#406080");
 state.hiCol=hex2rgb("#e0a060");
 state.logMode=false;
 state.enabled={...SECTION_DEFAULTS};
+state.curveAuto={dynamic:false,contrast:false,film:false};
+state.curveAutoData={dynamic:null,contrast:null};
 
 function syncSectionEnabled(){
   document.querySelectorAll("[data-enable]").forEach(input=>{
@@ -712,9 +723,41 @@ function buildCurveLUT(pts){
   }
   return lut;
 }
-let lutM,lutR,lutG,lutB;
+let lutM,lutR,lutG,lutB,autoCurveLUT;
 function rebuildCurves(){lutM=buildCurveLUT(curves.m);lutR=buildCurveLUT(curves.r);lutG=buildCurveLUT(curves.g);lutB=buildCurveLUT(curves.b);}
+function curvePercentile(hist,total,q){
+  const target=total*q;let sum=0;
+  for(let i=0;i<hist.length;i++){sum+=hist[i];if(sum>=target)return i/(hist.length-1);}
+  return .5;
+}
+function analyseAutoCurve(src){
+  if(!src)return{low:0,high:1,median:.5};
+  const hist=new Uint32Array(256),data=src.data;
+  for(let i=0;i<data.length;i+=4){
+    const luma=Math.min(255,Math.round(.2126*data[i]+.7152*data[i+1]+.0722*data[i+2]));
+    hist[luma]++;
+  }
+  const total=src.width*src.height;
+  return{low:curvePercentile(hist,total,.01),high:curvePercentile(hist,total,.99),median:curvePercentile(hist,total,.5)};
+}
+function rebuildAutoCurve(){
+  const lut=new Float32Array(256),auto=state.curveAuto;
+  if(!auto.dynamic&&!auto.contrast&&!auto.film){for(let i=0;i<256;i++)lut[i]=i/255;autoCurveLUT=lut;return;}
+  const dynamic=state.curveAutoData.dynamic||{low:0,high:1};
+  const contrast=state.curveAutoData.contrast||{median:.5};
+  const low=dynamic.low,high=dynamic.high,median=contrast.median;
+  const range=Math.max(.08,high-low),pivot=auto.dynamic?clamp((median-low)/range):median;
+  for(let i=0;i<256;i++){
+    let y=i/255;
+    if(auto.dynamic)y=clamp((y-low)/range);
+    if(auto.contrast)y=clamp(y+.34*(y-pivot)*(1-Math.abs(2*y-1)));
+    if(auto.film)y=clamp(.035+.93*y+.16*(y-.5)*(1-Math.abs(2*y-1)));
+    lut[i]=y;
+  }
+  autoCurveLUT=lut;
+}
 rebuildCurves();
+rebuildAutoCurve();
 const cAt=(lut,v)=>lut[Math.round(clamp(v)*255)];
 
 /* ================= colour helpers ================= */
@@ -816,7 +859,11 @@ function grade(r,g,b){
     }
   }
 
-  if(state.enabled.curves){r=cAt(lutR,cAt(lutM,r));g=cAt(lutG,cAt(lutM,g));b=cAt(lutB,cAt(lutM,b));}
+  if(state.enabled.curves){
+    r=cAt(autoCurveLUT,cAt(lutR,cAt(lutM,r)));
+    g=cAt(autoCurveLUT,cAt(lutG,cAt(lutM,g)));
+    b=cAt(autoCurveLUT,cAt(lutB,cAt(lutM,b)));
+  }
   let needHsl=false;
   for(let i=0;i<HUEN;i++)if((state.enabled.hueShift&&hueShift[i])||(state.enabled.hueSat&&hueSat[i])){needHsl=true;break;}
   if(needHsl){
@@ -1067,6 +1114,7 @@ function render(){
   raf=requestAnimationFrame(()=>{
     raf=null;
     updateNormalisationGains(cur>=0?images[cur].data:null);
+    rebuildAutoCurve();
     drawRamp();drawCurves();drawStrips();
     scheduleCubeAnalysis();
     if(cur<0)return;
@@ -1318,6 +1366,18 @@ document.querySelectorAll(".chtabs button").forEach(b=>b.addEventListener("click
   b.classList.add("on");curveCh=b.dataset.ch;drawCurves();
 }));
 $("curveReset").addEventListener("click",()=>{curves[curveCh]=defCurve();rebuildCurves();render();pushHistory();});
+const autoCurveButtons={dynamic:$("optDynamic"),contrast:$("optContrast"),film:$("optFilm")};
+function syncAutoCurveButtons(){
+  Object.entries(autoCurveButtons).forEach(([key,button])=>button.classList.toggle("on",state.curveAuto[key]));
+}
+Object.entries(autoCurveButtons).forEach(([key,button])=>button.addEventListener("click",()=>{
+  state.curveAuto[key]=!state.curveAuto[key];
+  if(state.curveAuto[key]&&key!=="film")state.curveAutoData[key]=analyseAutoCurve(cur>=0?images[cur].data:null);
+  syncAutoCurveButtons();
+  render();
+  pushHistory();
+}));
+syncAutoCurveButtons();
 
 /* ================= generic handle strips ================= */
 function makeStrip(cvId,arr,n,periodic,bgFn){
@@ -2268,6 +2328,8 @@ function applyDataSilent(p){
   state.hiCol=hex2rgb(p.hiCol||"#e0a060");
   state.logMode=!!p.logMode;
   state.enabled={...SECTION_DEFAULTS,...((p.state&&p.state.enabled)||{})};
+  state.curveAuto={dynamic:false,contrast:false,film:false,...((p.state&&p.state.curveAuto)||{})};
+  state.curveAutoData={dynamic:null,contrast:null,...((p.state&&p.state.curveAutoData)||{})};
   ["m","r","g","b"].forEach(ch=>curves[ch]=((p.curves&&p.curves[ch])||defCurve()).map(q=>({x:q.x,y:q.y})));
   hueShift.fill(0);(p.hueShift||[]).forEach((v,i)=>hueShift[i]=v);
   hueSat.fill(0);(p.hueSat||[]).forEach((v,i)=>hueSat[i]=v);
@@ -2281,6 +2343,7 @@ function applyDataSilent(p){
   }
   rebuildCurves();
   syncSectionEnabled();
+  syncAutoCurveButtons();
 }
 function restoreLoadedLutSettings(savedList){
   // LUT data itself remains loaded globally. Restore only the selected stack
@@ -2331,6 +2394,8 @@ function applyGradeData(p){
   $("hiCol").value=p.hiCol||"#e0a060";state.hiCol=hex2rgb($("hiCol").value);
   state.logMode=!!p.logMode;$("logMode").checked=state.logMode;
   state.enabled={...SECTION_DEFAULTS,...((p.state&&p.state.enabled)||{})};
+  state.curveAuto={dynamic:false,contrast:false,film:false,...((p.state&&p.state.curveAuto)||{})};
+  state.curveAutoData={dynamic:null,contrast:null,...((p.state&&p.state.curveAutoData)||{})};
   if(Array.isArray(p.loadedLutData))restoreSavedLoadedLutData(p.loadedLutData);
   restoreLoadedLutSettings(p.loadedLuts);
   ["m","r","g","b"].forEach(ch=>curves[ch]=((p.curves&&p.curves[ch])||defCurve()).map(q=>({x:q.x,y:q.y})));
@@ -2345,6 +2410,7 @@ function applyGradeData(p){
     cbState.shadows={x:0,y:0};cbState.midtones={x:0,y:0};cbState.highlights={x:0,y:0};
   }
   syncSectionEnabled();
+  syncAutoCurveButtons();
   drawColorWheel($("cbSh"),cbState.shadows.x,cbState.shadows.y);
   drawColorWheel($("cbMd"),cbState.midtones.x,cbState.midtones.y);
   drawColorWheel($("cbHi"),cbState.highlights.x,cbState.highlights.y);
@@ -2801,6 +2867,8 @@ $("resetAll").addEventListener("click",()=>{
   state.hiCol=hex2rgb("#e0a060");$("hiCol").value="#e0a060";
   state.logMode=false;$("logMode").checked=false;
   state.enabled={...SECTION_DEFAULTS};syncSectionEnabled();
+  state.curveAuto={dynamic:false,contrast:false,film:false};syncAutoCurveButtons();
+  state.curveAutoData={dynamic:null,contrast:null};
   ["m","r","g","b"].forEach(ch=>curves[ch]=defCurve());
   hueShift.fill(0);hueSat.fill(0);lumaSat.fill(0);
   cbState.shadows={x:0,y:0};cbState.midtones={x:0,y:0};cbState.highlights={x:0,y:0};
